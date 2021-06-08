@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <!-- Required meta tags -->
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.1/dist/css/bootstrap.min.css" rel="stylesheet"
+        integrity="sha384-+0n0xVW2eSR5OomGNYDnhzAbDsOXxcvSN1TPprVMTNDbiYZCxYbOOl7+AMvyTG2x" crossorigin="anonymous">
+
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"
+        integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
+
+    <!-- Axios -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/0.21.1/axios.min.js"
+        integrity="sha512-bZS47S7sPOxkjU/4Bt0zrhEtWx0y0CRkhEp8IckzK+ltifIIE9EMIMTuT/mEzoIMewUINruDBIR/jJnbguonqQ=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+
+
+    <script language="JavaScript">
+        // Initialize some vars 
+        var [rita, rm, nfactor, corpus, opts] = [null, null, 4, null, { ignoreCase: true, ignoreStopWords: false }];
+
+        // Helper 
+        const clean = (txt) => {
+            // txt = txt.replace(/\n/gmi, '<br/>');
+            // txt = txt.replace(/\n/gmi, '<br/>');
+            txt = txt.replace(/\.([A-Z])/gmi, '. $1');
+            return txt;
+        }
+
+        // Async func to get corpus
+        async function fn() {
+            // const files = ['art', 'news', 'phds', 'slack', 'tv', 'writing'];
+            const files = ['art', 'phds', 'slack', 'tv', 'writing'];
+            let text = [];
+            for (file of files) {
+                let t = await axios.get(`./assets/${file}.txt?cb=${new Date().getTime()}`);
+                text.push(clean(t.data))
+            }
+            console.log(`Corpus consists of ${text.length} sentences!`);
+            return text.join(' ');
+            // return clean(t.data) || null;
+        }
+
+        function getCompletionsFor(phrase) {
+            let c = $('#completions');
+            let word = rita.tokenize(phrase).pop();
+            let completions = kwic(word);
+            let words = rita.tokenize(phrase);
+            words = rita.tokenize(phrase).filter(w => !['.',','].includes(w))
+            let last_few_words = words.splice(words.length-2).join(' ').trim();
+            // console.log(`last_few: ${last_few_words}`);
+            let sents = rita.sentences(corpus);
+            // let top_completions = sents.filter(sent => sent.toLowerCase().search(last_few_words.toLowerCase()) >= 0);
+            let r = new RegExp(eval(`/.* ${last_few_words}( |,)/i`));
+            // r.pattern = `(\.|-|–| )${last_few_words}(,|-|–| )`;
+            r.ignoreCase = true;
+            let top_completions = sents.filter(sent => sent.search(r) >= 0 && sent.length > 10);
+
+            // let r = new RegExp(eval(`/.*${last_few_words}/i`));
+            // r.ignoreCase = true;
+            // Now truncate top_completions 
+            top_completions = top_completions.map(sentence => {
+                let s = rita.tokenize(sentence.replace(r,'').trim());
+                // let s = rita.tokenize(sentence);
+                if (s.length > 10) {
+                    s = s.slice(0,10);
+                }
+                // return `last_few: ${last_few_words}... len: ${s.length}: ${rita.untokenize(s)}`;
+                return rita.untokenize(s);
+            }).filter(comp => comp.length >= 3);
+            top_completions = top_completions.map(w => `<button data-role="completions" class="btn btn-sm btn-outline-success m-1 d-inline">${w}</button>`);
+            completions = completions.map(w => `<button data-role="completions" class="btn btn-sm btn-outline-primary m-1 d-inline">${w}</button>`);
+
+            completions = [...top_completions, ...completions];
+
+            c.html(`${completions.join('')}`);
+            $('button[data-role="completions"]').bind('click', function() {
+                let selection = $(this).text().trim();
+                let next_char = Array.from(selection)[0];
+                let old_html = $('#story').text().trim()
+                let last_char = Array.from(old_html).pop();
+                let new_story = '';
+                if ([','].includes(next_char)) {
+                    new_story = `${old_html}${selection}`;
+                } else {
+                    new_story = `${old_html} ${selection}`;
+                }
+                $('#story').text(new_story);
+                // Clear out the html
+                $('#completions').html('');
+                let sents = rita.sentences(corpus);
+                window.setTimeout(getCompletionsFor, 500, new_story);
+            })
+        }
+
+        function kwic(word, numWords = 5, limit=25) {
+            rita.concordance(corpus.replace(/\<br\/\>/gmi, ''), opts);
+            numWords++;
+            let lines = RiTa.kwic(word, numWords);
+            lines = lines.map(line => {
+                // Tokenize this particular completion
+                let tok = rita.tokenize(line);
+                // find the position of the word inside the completion
+                let p = tok.indexOf(word);
+                return rita.untokenize(tok.slice(p+1, p+1 + numWords));
+            });
+            // Finally only filter lines 
+            lines = lines.filter(line => line !== '' && rita.tokenize(line).length >= numWords);
+            return lines.slice(0,limit)
+        }
+
+        // Fire when ready
+        $(document).ready(function () {
+            const sep = '-'.repeat(50);
+            if (typeof (RiTa) === 'function') rita = RiTa;
+            // Populate the response div
+            (async () => {
+                corpus = await fn();
+                rm = rita.markov(nfactor);
+                // Here is where you will add Text a little at a time...
+                let sents = rita.sentences(corpus);
+                // How many sentences you'll add at once
+                const interval = 500; 
+                while (sents.length > 0) {
+                    let segment = sents.splice(0, interval);
+                    rm.addText(rita.untokenize(segment));
+                }
+                console.log('Done adding text!');
+                // rm.addText(corpus);
+                // $('#r').html(corpus);
+            })();
+
+            $('#story').bind('blur', function() {
+                let v = $(this).text().trim();
+                if (v) {
+                    getCompletionsFor(v);
+                }
+            })
+        });
+    </script>
+
+    <style type="text/css">
+        [data-role="completions"] {
+            display: inline-block;
+        }
+    </style>
+
+    <title>Hello, world!</title>
+</head>
+
+<body>
+    <div class="container jumbotron bg bg-muted mb-4">
+        <div class="display-1 text-primary">Algorithmic Cut-ups</div>
+    </div>
+
+
+
+    <!-- Option 1: Bootstrap Bundle with Popper -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.1/dist/js/bootstrap.bundle.min.js"
+        integrity="sha384-gtEjrD/SeCtmISkJkNUaaKMoLD0//ElJ19smozuHV6z3Iehds+3Ulb9Bn9Plx0x4"
+        crossorigin="anonymous"></script>
+
+    <div class="container">
+        <div class="row">
+            <!-- <div class="col-4 pe-4">
+                <h1>Corpus</h1>
+                <div class="small" id="r"></div>
+            </div>
+            <div class="col-4">
+                <h1>Cut-up</h1>
+            </div> -->
+            <div class="col-12">
+                <h2>Completions...</h2>
+                <div class="p-2 border border-muted" id="story" contenteditable="true"></div>
+                <div class="small" id="completions"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Rita -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/rita/2.4.86/rita.js"
+        integrity="sha512-iYFsW5Ov7R/XRmxSHYu/VziOdHshZqnUCjjVZLlF7/W0S/8Jeuc1U/+z4xaFdW4U07X2Mlj4WmSaK1qxWl22Hw=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+</body>
+
+</html>
